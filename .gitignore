@@ -1,0 +1,8 @@
+.direnv
+.vscode
+.envrc
+node_modules
+.env
+assets
+config
+cache
