@@ -9,6 +9,7 @@ bun2nix.mkDerivation {
 
   src = ./.;
 
+  # nix run github:nix-community/bun2nix -- -o bun.nix
   bunDeps = bun2nix.fetchBunDeps {
     bunNix = ./bun.nix;
   };

@@ -7,7 +7,6 @@ pkgs.dockerTools.streamLayeredImage {
     pkgs.coreutils
   ];
   config = {
-    User = "paowa";
     WorkingDir = "/app";
     Cmd = ["bun" "run" "src/cmd/paowa.ts"];
     Volumes = {
