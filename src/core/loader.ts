@@ -119,8 +119,9 @@ export class PluginLoader {
                     const cmdScope = cmd.scope;
                     if (!isScopeAllowed(pluginScope, cmdScope)) {
                         this.logger.warn(
-                            `Plugin ${pluginName}: command "${cmd.name}" has scope "${cmdScope ?? 'all'}" ` +
-                            `which is not allowed by plugin scope "${pluginScope ?? 'all'}"`
+                            `Plugin ${pluginName}: command "${cmd.name}" has scope "${
+                                cmdScope ?? "all"
+                            }" ` + `which is not allowed by plugin scope "${pluginScope ?? "all"}"`
                         );
                     }
                 }

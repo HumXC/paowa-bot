@@ -7,9 +7,12 @@ async function main() {
     const bot = new Bot();
 
     // 插件目录
-    const pluginDir = process.env.PLUGIN_DIR || path.join(process.cwd(), "plugins");
+    let pluginDir = process.env.PLUGIN_DIR || path.join(process.cwd(), "plugins");
     // 配置目录
-    const configDir = process.env.CONFIG_DIR || path.join(process.cwd(), "config");
+    let configDir = process.env.CONFIG_DIR || path.join(process.cwd(), "config");
+
+    pluginDir = path.resolve(pluginDir);
+    configDir = path.resolve(configDir);
 
     const configLoader = new ConfigLoader(bot, configDir);
     configLoader.start();

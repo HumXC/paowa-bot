@@ -1,15 +1,21 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    bun2nix.url = "github:nix-community/bun2nix";
+    bun2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = {nixpkgs, ...}: let
+  outputs = {
+    nixpkgs,
+    bun2nix,
+    ...
+  }: let
     forAllSystems = nixpkgs.lib.genAttrs [
       "aarch64-linux"
       "x86_64-linux"
     ];
   in {
-    overlays = import ./nix/overlays.nix {inherit nixpkgs;};
+    overlays = import ./nix/overlays.nix {inherit nixpkgs bun2nix;};
     devShells = forAllSystems (
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -20,6 +26,16 @@
             sqlite
           ];
         };
+      }
+    );
+    packages = forAllSystems (
+      system: let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in {
+        paowa = pkgs.callPackage ./nix/package.nix {
+          inherit (bun2nix.packages.${system}) bun2nix;
+        };
+        dockerImage = pkgs.callPackage ./nix/docker.nix {};
       }
     );
   };
