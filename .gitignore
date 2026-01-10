@@ -8,3 +8,6 @@ config
 cache
 /src/plugins
 data
+.opencode
+AGENTS.md
+openspec

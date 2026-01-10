@@ -2,9 +2,21 @@ import * as fs from "fs";
 import * as path from "path";
 import * as chokidar from "chokidar";
 import { Bot } from "./bot";
-import { Plugin, PluginMeta } from "./types";
+import { Plugin, PluginMeta, Scope } from "./types";
 import { ConfigLoader } from "./config-loader";
 import { Logger, withScope } from "./logger";
+
+const scopeHierarchy: Record<Scope, number> = {
+    private: 0,
+    group: 1,
+    all: 2,
+};
+
+function isScopeAllowed(pluginScope: Scope | undefined, commandScope: Scope | undefined): boolean {
+    const p = pluginScope ?? "all";
+    const c = commandScope ?? "all";
+    return scopeHierarchy[c] <= scopeHierarchy[p];
+}
 
 export class PluginLoader {
     private bot: Bot;
@@ -100,12 +112,27 @@ export class PluginLoader {
                 this.bot.unregisterPlugin(pluginName, true);
             }
 
+            // 4.1 验证命令 scope
+            if (plugin.commands) {
+                const pluginScope = plugin.meta.scope;
+                for (const cmd of plugin.commands) {
+                    const cmdScope = cmd.scope;
+                    if (!isScopeAllowed(pluginScope, cmdScope)) {
+                        this.logger.warn(
+                            `Plugin ${pluginName}: command "${cmd.name}" has scope "${cmdScope ?? 'all'}" ` +
+                            `which is not allowed by plugin scope "${pluginScope ?? 'all'}"`
+                        );
+                    }
+                }
+            }
+
             // 5. 建立双向索引
             this.pluginPaths.set(pluginName, fullPath);
             this.pathRef.set(fullPath, pluginName);
 
             // 6. 注入配置并注册
             plugin.config = this.configLoader.getConfig(pluginName, plugin.config);
+            this.configLoader.syncConfig(pluginName, plugin.config);
             this.bot.registerPlugin(plugin);
 
             this.logger.success(`Successfully loaded: ${pluginName}`);

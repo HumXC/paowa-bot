@@ -18,21 +18,11 @@ import {
     XmlSegment,
     MarkdownSegment,
 } from "@naplink/naplink";
-import { Command, Plugin, MessageHandler } from "./types";
+import { Command, Plugin, MessageHandler, parseCommandBasename } from "./types";
 import { PermissionManager } from "./permission";
 import { breadc, type Breadc, ParseError } from "breadc";
 import { z } from "zod";
 import { Logger, withScope } from "./logger";
-function parseCommandName(name: string): string {
-    if (!name) return "";
-
-    // 正则表达式逻辑：
-    // 1. \s+[\-\<\[].* : 匹配空格后跟着 - (选项), < (必选参数), 或 [ (可选参数)
-    // 2. .* : 匹配后面所有的字符并将其替换为空
-    const commandName = name.replace(/\s+([\-\<\[]).*/, "");
-
-    return commandName.trim();
-}
 
 export class Bot {
     public client: NapLink;
@@ -42,6 +32,14 @@ export class Bot {
     private messageHandlers: Map<string, MessageHandler[]> = new Map();
     private cli: Breadc;
     private logger: Logger;
+    private __id: number = 0;
+    private __nickname: string = "";
+    public get id() {
+        return this.__id;
+    }
+    public get nickname() {
+        return this.__nickname;
+    }
 
     constructor() {
         this.permission = new PermissionManager();
@@ -77,6 +75,7 @@ export class Bot {
     private setupListeners() {
         this.client.on("message.group", async (data) => {
             const ctx = new Context(this.client, data, true);
+            ctx.is_at_self = this.isSelfMentioned(ctx);
             await this.handleMessage(ctx);
         });
 
@@ -86,9 +85,38 @@ export class Bot {
         });
     }
 
+    private isSelfMentioned(ctx: Context): boolean {
+        const selfId = this.id;
+        if (!selfId) return false;
+        return ctx.message.some(
+            (seg) => seg.type === "at" && (seg as any).data?.qq === selfId.toString()
+        );
+    }
+
     private async handleMessage(ctx: Context) {
-        const content = ctx.raw.raw_message?.trim() || "";
+        const selfId = this.id;
+
+        // 从 message 段提取文本
+        const messageTexts: string[] = ctx.message.map((seg) => {
+            if (seg.type === "text") {
+                return (seg as any).data?.text || "";
+            }
+            return seg.toString();
+        });
+
+        // Trim 首尾空白，并处理纯空白行
+        let content = messageTexts.join(" ").trim();
         if (!content) return;
+
+        // 如果开头是 @self，剔除
+        if (ctx.is_at_self && ctx.message.length > 0) {
+            const firstSeg = ctx.message[0];
+            if (firstSeg.type === "at" && (firstSeg as AtSegment).data.qq === selfId.toString()) {
+                content = messageTexts.slice(1).join(" ").trim();
+                if (!content) return;
+            }
+        }
+
         const argv = content.split(/\s+/);
 
         // 1. 尝试匹配命令
@@ -105,13 +133,19 @@ export class Bot {
                 if (cmd.scope === "group" && !ctx.is_group) return;
 
                 // 权限检查
+                const cmdName = parseCommandBasename(cmd.name);
                 const hasPerm = this.permission.checkPermission(
                     ctx,
                     cmd.pluginName,
-                    cmd.name,
+                    cmdName,
                     cmd.permission
                 );
-                if (!hasPerm) return;
+                if (!hasPerm) {
+                    if (!ctx.is_group || ctx.is_at_self) {
+                        ctx.reply.text("没有权限").commit();
+                    }
+                    return;
+                }
 
                 // 参数校验与转换逻辑
                 let validatedArgs: any;
@@ -145,20 +179,31 @@ export class Bot {
                 );
                 await cmd.handler(ctx, validatedArgs);
 
-                if (ctx.message.length > 0) {
+                if (ctx.reply_message.length > 0) {
                     await ctx.reply.commit();
                 }
                 return; // 命令已处理，直接返回
             }
         } catch (e) {
             if (e instanceof ParseError) {
-                const name = parseCommandName(argv.join(" "));
+                const name = parseCommandBasename(argv.join(" "));
                 for (const [c, cmd] of this.commands) {
                     if (c === name) {
                         await ctx.reply.text(`Invalid command:\n${cmd.name}`).commit();
                         return;
                     }
                 }
+            }
+            if (e instanceof Error && e.message === "Unknown sub-command") {
+                const cmds = [];
+                for (const [c, cmd] of this.commands) {
+                    if (cmd.root === argv[0]) {
+                        cmds.push(" - " + cmd.name);
+                    }
+                }
+                cmds.sort();
+                await ctx.reply.text(`Usage:\n${cmds.join("\n")}`).commit();
+                return;
             }
             this.logger.error(e);
         }
@@ -172,7 +217,7 @@ export class Bot {
                 try {
                     const intercepted = await handlerObj.handler(ctx);
                     if (intercepted === true) {
-                        if (ctx.message.length > 0) await ctx.reply.commit();
+                        if (ctx.reply_message.length > 0) await ctx.reply.commit();
                         return;
                     }
                 } catch (e) {
@@ -196,7 +241,7 @@ export class Bot {
             if (plugin.commands) {
                 this.logger.info(`Registering commands from plugin: ${plugin.meta.name}`);
                 plugin.commands.forEach((cmd) => {
-                    const c = parseCommandName(cmd.name);
+                    const c = parseCommandBasename(cmd.name);
                     if (this.commands.has(c)) {
                         this.logger.warn(`Command ${cmd.name} already exists, skipping...`);
                         return;
@@ -249,6 +294,11 @@ export class Bot {
         this.logger.info("Bot starting...");
         try {
             await this.client.connect();
+            const loginInfo = await this.client.getLoginInfo();
+            this.__id = loginInfo.user_id;
+            this.__nickname = loginInfo.nickname;
+            this.permission.setSelfId(loginInfo.user_id);
+            this.logger.info(`Bot started with self ID: ${loginInfo.user_id}`);
         } catch (error) {
             this.logger.error("Failed to connect:", error);
         }
@@ -273,27 +323,48 @@ export class Context {
     public sender_id: number;
     public group_id: number;
     public is_group: boolean;
+    public is_at_self: boolean = false; // 消息是否 @ 了机器人
     public message: MessageSegment[] = [];
+    public reply_message: MessageSegment[] = [];
     private _isSending: boolean = false;
+    private _recallTimeout: number = -1;
+    private _recallSenderTimeout: number = -1;
+
+    public recallSender(timeout: number = 0) {
+        this._recallSenderTimeout = timeout;
+    }
     public get reply() {
         const self = this;
         return {
             commit: async () => {
-                if (self.message.length === 0 || self._isSending) return;
-
+                if (self.reply_message.length === 0 || self._isSending) return;
+                var result: { message_id: number } = { message_id: 0 };
                 self._isSending = true;
                 try {
-                    const msgCopy = [...self.message]; // 拷贝当前消息栈
-                    self.message = []; // 立即清空，防止重发
+                    const msgCopy = [...self.reply_message]; // 拷贝当前消息栈
+                    self.reply_message = []; // 立即清空，防止重发
 
                     if (self.is_group) {
-                        await self.client.sendGroupMessage(self.group_id, msgCopy);
+                        result = await self.client.sendGroupMessage(self.group_id, msgCopy);
                     } else {
-                        await self.client.sendPrivateMessage(self.sender_id, msgCopy);
+                        result = await self.client.sendPrivateMessage(self.sender_id, msgCopy);
                     }
                 } finally {
                     self._isSending = false;
+                    if (self._recallTimeout > 0 && result.message_id) {
+                        setTimeout(() => {
+                            self.client.deleteMessage(result.message_id);
+                        }, self._recallTimeout);
+                    }
+                    if (self._recallSenderTimeout >= 0 && result.message_id) {
+                        setTimeout(() => {
+                            self.client.deleteMessage(self.raw.message_id);
+                        }, self._recallSenderTimeout);
+                    }
                 }
+            },
+            recall: (timeout: number) => {
+                self._recallTimeout = timeout;
             },
             text: (content: string) => {
                 const msg: TextSegment = {
@@ -302,7 +373,7 @@ export class Context {
                         text: content,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             at: (user_id: number | null = null) => {
@@ -315,7 +386,7 @@ export class Context {
                         qq: user_id ? user_id.toString() : self.sender_id.toString(),
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             face: (id: number) => {
@@ -325,7 +396,7 @@ export class Context {
                         id: id.toString(),
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             image: (file: string, summary?: string, sub_type?: string) => {
@@ -337,7 +408,7 @@ export class Context {
                         sub_type: sub_type,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             record: (file: string) => {
@@ -347,7 +418,7 @@ export class Context {
                         file: file,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             video: (file: string) => {
@@ -357,7 +428,7 @@ export class Context {
                         file: file,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             file: (file: string, name?: string) => {
@@ -368,7 +439,7 @@ export class Context {
                         name: name,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             json: (json: any) => {
@@ -378,7 +449,7 @@ export class Context {
                         data: JSON.stringify(json),
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             xml: (xml: string) => {
@@ -388,7 +459,7 @@ export class Context {
                         data: xml,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
             markdown: (content: string) => {
@@ -398,7 +469,7 @@ export class Context {
                         content: content,
                     },
                 };
-                self.message.push(msg);
+                self.reply_message.push(msg);
                 return self.reply;
             },
         };
@@ -410,5 +481,6 @@ export class Context {
         this.group_id = isGroup ? groupMessage.group_id : 0;
         this.is_group = isGroup;
         this.client = client;
+        this.message = event.message;
     }
 }

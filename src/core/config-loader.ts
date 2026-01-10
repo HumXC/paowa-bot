@@ -27,15 +27,17 @@ export class ConfigLoader {
     }
 
     public getConfig(pluginName: string, defaultConfig?: any): any {
+        if (defaultConfig === null || defaultConfig === undefined) {
+            return this.configs.get(pluginName) || {};
+        }
+
         let config = this.configs.get(pluginName);
         if (!config && defaultConfig) {
-            // 如果内存中没有配置，尝试加载文件
             const filePath = path.join(this.configDir, `${pluginName}.json`);
             if (fs.existsSync(filePath)) {
                 this.loadConfig(filePath);
                 config = this.configs.get(pluginName);
             } else {
-                // 文件不存在，创建默认配置
                 this.logger.info(
                     `Config file for ${pluginName} not found, creating default config`
                 );
@@ -45,12 +47,60 @@ export class ConfigLoader {
             }
         }
 
-        // 合并默认配置（以防配置文件缺少某些字段）
         if (defaultConfig && config) {
             return { ...defaultConfig, ...config };
         }
 
         return config || {};
+    }
+
+    public syncConfig(pluginName: string, defaultConfig: any): void {
+        if (defaultConfig === null || defaultConfig === undefined) {
+            return;
+        }
+
+        const filePath = path.join(this.configDir, `${pluginName}.json`);
+
+        if (!fs.existsSync(filePath)) {
+            this.saveConfig(pluginName, defaultConfig);
+            this.configs.set(pluginName, defaultConfig);
+            this.logger.info(`Created config for ${pluginName}`);
+            return;
+        }
+
+        const existingConfig = this.configs.get(pluginName);
+        if (!existingConfig) {
+            this.loadConfig(filePath);
+        }
+
+        const currentConfig = this.configs.get(pluginName) || {};
+        const mergedConfig = this.deepMerge(defaultConfig, currentConfig);
+
+        if (this.hasChanges(currentConfig, mergedConfig)) {
+            this.saveConfig(pluginName, mergedConfig);
+            this.configs.set(pluginName, mergedConfig);
+            this.logger.info(`Synced config for ${pluginName}`);
+        }
+    }
+
+    private deepMerge(target: any, source: any): any {
+        const result = { ...target };
+
+        for (const key of Object.keys(source)) {
+            if (key in target && typeof target[key] === "object" && target[key] !== null && !Array.isArray(target[key])) {
+                result[key] = this.deepMerge(target[key], source[key]);
+            } else {
+                result[key] = source[key];
+            }
+        }
+
+        return result;
+    }
+
+    private hasChanges(original: any, merged: any): boolean {
+        const originalStr = JSON.stringify(original, Object.keys(original).sort());
+        const mergedStr = JSON.stringify(merged, Object.keys(merged).sort());
+        return originalStr !== mergedStr;
     }
 
     private loadAll() {
