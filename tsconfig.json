@@ -10,7 +10,10 @@
         "forceConsistentCasingInFileNames": true,
         "outDir": "./dist",
         "rootDir": "./src",
-        "jsx": "react"
-    },
-    "include": ["src/**/*"]
+        "jsx": "react",
+        "paths": {
+            "@paowa-bot/core": ["./src/core/index.ts"],
+            "@paowa-bot/core/*": ["./src/core/*"]
+        }
+    }
 }

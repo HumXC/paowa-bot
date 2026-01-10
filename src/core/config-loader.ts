@@ -2,16 +2,20 @@ import * as fs from "fs";
 import * as path from "path";
 import * as chokidar from "chokidar";
 import { Bot } from "./bot";
+import { Logger, withScope } from "./logger";
 
 export class ConfigLoader {
     private bot: Bot;
     private configDir: string;
     private watcher: chokidar.FSWatcher | null = null;
     private configs: Map<string, any> = new Map();
-
+    private logger: Logger;
     constructor(bot: Bot, configDir: string) {
         this.bot = bot;
         this.configDir = configDir;
+        this.logger = withScope("ConfigLoader");
+        this.logger.info(`Config directory: ${configDir}`);
+
         if (!fs.existsSync(this.configDir)) {
             fs.mkdirSync(this.configDir, { recursive: true });
         }
@@ -32,7 +36,9 @@ export class ConfigLoader {
                 config = this.configs.get(pluginName);
             } else {
                 // 文件不存在，创建默认配置
-                console.log(`Creating default config for ${pluginName}`);
+                this.logger.info(
+                    `Config file for ${pluginName} not found, creating default config`
+                );
                 this.saveConfig(pluginName, defaultConfig);
                 config = defaultConfig;
                 this.configs.set(pluginName, config);
@@ -62,7 +68,7 @@ export class ConfigLoader {
             const filePath = path.join(this.configDir, `${pluginName}.json`);
             fs.writeFileSync(filePath, JSON.stringify(config, null, 4)); // 4缩进
         } catch (err) {
-            console.error(`Failed to save config for ${pluginName}:`, err);
+            this.logger.error(`Failed to save config for ${pluginName}:`, err);
         }
     }
 
@@ -75,15 +81,15 @@ export class ConfigLoader {
 
         this.watcher
             .on("add", (filePath) => {
-                console.log(`Config added: ${filePath}`);
+                this.logger.info(`Config added: ${filePath}`);
                 this.loadConfig(filePath);
             })
             .on("change", (filePath) => {
-                console.log(`Config changed: ${filePath}`);
+                this.logger.info(`Config changed: ${filePath}`);
                 this.reloadConfig(filePath);
             })
             .on("unlink", (filePath) => {
-                console.log(`Config removed: ${filePath}`);
+                this.logger.info(`Config removed: ${filePath}`);
                 this.removeConfig(filePath);
             });
     }
@@ -99,23 +105,10 @@ export class ConfigLoader {
             const plugin = this.bot.plugins.get(pluginName);
             if (plugin) {
                 plugin.config = config;
-                console.log(`Updated config for plugin: ${pluginName}`);
-
-                // 可选：触发插件的 reload 或其他生命周期，这里简单起见，可以尝试重新加载插件
-                // 但重新加载插件逻辑在 PluginLoader 里，ConfigLoader 不好直接调
-                // 暂时只更新内存中的 config 对象
-                // 如果需要重新触发 onLoad，可能需要事件通知机制
-                // 这里我们假设 PluginLoader 会监听 ConfigLoader 的变化，或者 ConfigLoader 通知 Bot
-
-                // 简单实现：尝试调用 Bot 上的方法通知插件重载（如果 Bot 有这个能力）
-                // 目前 Bot 没有 reloadPlugin 方法，但我们可以设计一个机制。
-                // 为了题目要求的 "配置文件如果有变化需要重新加载插件"，
-                // 我们应该通知 PluginLoader 去 reload 对应的插件。
-
-                this.bot.reloadPlugin(pluginName);
+                this.logger.info(`Updated config for plugin: ${pluginName}`);
             }
         } catch (err) {
-            console.error(`Failed to load config ${filePath}:`, err);
+            this.logger.error(`Failed to load config ${filePath}:`, err);
         }
     }
 
@@ -129,7 +122,6 @@ export class ConfigLoader {
         const plugin = this.bot.plugins.get(pluginName);
         if (plugin) {
             plugin.config = undefined;
-            this.bot.reloadPlugin(pluginName);
         }
     }
 }

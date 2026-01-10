@@ -6,5 +6,9 @@ export function definePlugin(plugin: Plugin): Plugin {
 }
 
 export function cacheFile(filePath: string): string {
-    return path.join(process.cwd(), "cache", filePath);
+    return path.join(process.cwd(), process.env.CACHE_DIR || "cache", filePath);
+}
+
+export function dataFile(filePath: string): string {
+    return path.join(process.cwd(), process.env.DATA_DIR || "data", filePath);
 }

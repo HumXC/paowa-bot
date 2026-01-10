@@ -6,3 +6,5 @@ node_modules
 assets
 config
 cache
+/src/plugins
+data
