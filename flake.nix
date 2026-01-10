@@ -31,11 +31,13 @@
     packages = forAllSystems (
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
-      in {
         paowa = pkgs.callPackage ./nix/package.nix {
           inherit (bun2nix.packages.${system}) bun2nix;
         };
-        dockerImage = pkgs.callPackage ./nix/docker.nix {};
+      in {
+        default = paowa;
+        paowa = paowa;
+        dockerImage = pkgs.callPackage ./nix/docker.nix {inherit paowa;};
       }
     );
   };

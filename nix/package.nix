@@ -7,11 +7,11 @@ bun2nix.mkDerivation {
   pname = "paowa";
   version = "1.0.0";
 
-  src = ./.;
+  src = ../.;
 
   # bunx bun2nix -o bun.nix
   bunDeps = bun2nix.fetchBunDeps {
-    bunNix = ./bun.nix;
+    bunNix = ../bun.nix;
   };
 
   # 1. 禁用默认的打包行为
@@ -33,7 +33,7 @@ bun2nix.mkDerivation {
     #!/bin/sh
     # 这里的 PATH 确保能找到 bun
     export PATH="${pkgs.bun}/bin:\$PATH"
-    exec bun run src/cmd/paowa.ts "\$@"
+    exec bun run $out/lib/paowa/src/cmd/paowa.ts "\$@"
     EOF
 
     chmod +x $out/bin/paowa

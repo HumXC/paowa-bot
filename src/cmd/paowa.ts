@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import "dotenv/config";
 import * as path from "path";
-import { Bot, PluginLoader, ConfigLoader } from "@paowa-bot/core";
+import { Bot, PluginLoader, ConfigLoader } from "../core";
 
 async function main() {
     const bot = new Bot();
