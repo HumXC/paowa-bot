@@ -1,8 +1,8 @@
 import path from "path";
-import { Plugin } from "./types";
+import { Plugin, PluginSpec } from "./types";
 
-export function definePlugin(plugin: Plugin): Plugin {
-    return plugin;
+export function definePlugin(plugin: PluginSpec): Plugin {
+    return new Plugin(plugin);
 }
 
 export function cacheFile(filePath: string): string {

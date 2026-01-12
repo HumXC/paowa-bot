@@ -67,7 +67,7 @@ export interface PluginMeta {
     scope?: Scope;
 }
 
-export interface Plugin {
+export interface PluginSpec {
     meta: PluginMeta;
     commands?: Command<any>[];
     listeners?: Listener[];
@@ -75,6 +75,27 @@ export interface Plugin {
     config?: any;
     onLoad?: (bot: Bot) => void;
     onUnload?: () => void;
+}
+export class Plugin implements PluginSpec {
+    meta: PluginMeta;
+    commands: Command<any>[];
+    listeners: Listener[];
+    messageHandlers: MessageHandler[];
+    config?: any;
+    onLoad?: ((bot: Bot) => void) | undefined;
+    onUnload?: (() => void) | undefined;
+    logger: Logger;
+
+    constructor(spec: PluginSpec) {
+        this.meta = spec.meta;
+        this.commands = spec.commands ?? [];
+        this.listeners = spec.listeners ?? [];
+        this.messageHandlers = spec.messageHandlers ?? [];
+        this.config = spec.config ?? undefined;
+        this.onLoad = spec.onLoad ?? undefined;
+        this.onUnload = spec.onUnload ?? undefined;
+        this.logger = withScope(this.meta.name);
+    }
 }
 
 export type Command<T> = {
@@ -95,10 +116,11 @@ type InferArgs<T> = T extends any[]
     : undefined;
 
 import { z } from "zod";
+import { Logger, withScope } from "./logger";
 
 export function createCommand<
     T extends z.ZodType<any> | [z.ZodType<any>, ...z.ZodType<any>[]] | undefined
->(cmd: Omit<Command<T>, "basename" | "root">) {
+>(cmd: Omit<Command<T>, "basename" | "root" | "logger">) {
     const defaultScope = cmd.scope ?? "all";
 
     let permission: CommandPermissionConfig | undefined;
