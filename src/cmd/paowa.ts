@@ -4,8 +4,6 @@ import * as path from "path";
 import { Bot, PluginLoader, ConfigLoader } from "../core";
 
 async function main() {
-    const bot = new Bot();
-
     // 插件目录
     let pluginDir = process.env.PLUGIN_DIR || path.join(process.cwd(), "plugins");
     // 配置目录
@@ -13,6 +11,8 @@ async function main() {
 
     pluginDir = path.resolve(pluginDir);
     configDir = path.resolve(configDir);
+
+    const bot = new Bot(pluginDir, configDir);
 
     const configLoader = new ConfigLoader(bot, configDir);
     configLoader.start();

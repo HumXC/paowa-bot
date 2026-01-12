@@ -49,6 +49,20 @@ export interface CommandPermissionConfig {
     disabled?: boolean;
 }
 
+export interface MiddlewareMeta {
+    type: "command" | "message";
+    pluginName: string;
+    commandName?: string;
+    permission?: CommandPermissionConfig | PermissionLevel;
+    args?: any;
+}
+
+export type BotMiddleware = (
+    ctx: Context,
+    meta: MiddlewareMeta,
+    next: () => Promise<void>
+) => Promise<void>;
+
 export interface Listener {
     event: string;
     handler: (ctx: any) => Promise<void> | void;

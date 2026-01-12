@@ -26,8 +26,8 @@ export class PluginLoader {
     private logger: Logger;
     // 存储 pluginName -> fullPath
     private pluginPaths = new Map<string, string>();
-    // 存储 fullPath -> pluginName (用于 unload 时快速查找)
-    private pathRef = new Map<string, string>();
+    // 存储 fullPath -> pluginNames[] (一个文件可能包含多个插件)
+    private pathRef = new Map<string, string[]>();
     constructor(bot: Bot, pluginDir: string, configLoader: ConfigLoader) {
         this.bot = bot;
         this.pluginDir = path.resolve(pluginDir);
@@ -97,46 +97,55 @@ export class PluginLoader {
 
             // 2. 导入模块
             const module = require(fullPath);
-            const plugin: Plugin = module.default || module;
+            const exported = module.default || module;
 
-            // 3. 元数据校验
-            if (!plugin.meta?.name) {
-                this.logger.error(`Invalid plugin at ${fullPath}: missing meta.name`);
-                return;
-            }
+            const plugins: Plugin[] = Array.isArray(exported) ? exported : [exported];
+            const loadedPluginNames: string[] = [];
 
-            const pluginName = plugin.meta.name;
+            for (const plugin of plugins) {
+                // 3. 元数据校验
+                if (!plugin.meta?.name) {
+                    this.logger.error(`Invalid plugin at ${fullPath}: missing meta.name`);
+                    continue;
+                }
 
-            // 4. 检查是否已经存在同名插件（热重载安全防护）
-            if (this.pluginPaths.has(pluginName)) {
-                this.bot.unregisterPlugin(pluginName, true);
-            }
+                const pluginName = plugin.meta.name;
 
-            // 4.1 验证命令 scope
-            if (plugin.commands) {
-                const pluginScope = plugin.meta.scope;
-                for (const cmd of plugin.commands) {
-                    const cmdScope = cmd.scope;
-                    if (!isScopeAllowed(pluginScope, cmdScope)) {
-                        this.logger.warn(
-                            `Plugin ${pluginName}: command "${cmd.name}" has scope "${
-                                cmdScope ?? "all"
-                            }" ` + `which is not allowed by plugin scope "${pluginScope ?? "all"}"`
-                        );
+                // 4. 检查是否已经存在同名插件（热重载安全防护）
+                if (this.pluginPaths.has(pluginName)) {
+                    this.bot.unregisterPlugin(pluginName, true);
+                }
+
+                // 4.1 验证命令 scope
+                if (plugin.commands) {
+                    const pluginScope = plugin.meta.scope;
+                    for (const cmd of plugin.commands) {
+                        const cmdScope = cmd.scope;
+                        if (!isScopeAllowed(pluginScope, cmdScope)) {
+                            this.logger.warn(
+                                `Plugin ${pluginName}: command "${cmd.name}" has scope "${
+                                    cmdScope ?? "all"
+                                }" ` +
+                                    `which is not allowed by plugin scope "${pluginScope ?? "all"}"`
+                            );
+                        }
                     }
                 }
+
+                // 5. 建立索引
+                this.pluginPaths.set(pluginName, fullPath);
+                loadedPluginNames.push(pluginName);
+
+                // 6. 注入配置并注册
+                plugin.config = this.configLoader.getConfig(pluginName, plugin.config);
+                this.configLoader.syncConfig(pluginName, plugin.config);
+                this.bot.registerPlugin(plugin);
+
+                this.logger.success(`Successfully loaded: ${pluginName}`);
             }
 
-            // 5. 建立双向索引
-            this.pluginPaths.set(pluginName, fullPath);
-            this.pathRef.set(fullPath, pluginName);
-
-            // 6. 注入配置并注册
-            plugin.config = this.configLoader.getConfig(pluginName, plugin.config);
-            this.configLoader.syncConfig(pluginName, plugin.config);
-            this.bot.registerPlugin(plugin);
-
-            this.logger.success(`Successfully loaded: ${pluginName}`);
+            // 建立文件到多个插件名的映射
+            this.pathRef.set(fullPath, loadedPluginNames);
         } catch (err) {
             this.logger.error(`Failed to load plugin from ${fullPath}:`, err);
         }
@@ -146,18 +155,21 @@ export class PluginLoader {
         const fullPath = this.getFullPath(filePath);
         if (!fullPath) return;
 
-        // 直接通过路径索引获取插件名，无需循环
-        const pluginName = this.pathRef.get(fullPath);
+        // 直接通过路径索引获取插件名列表，无需循环
+        const pluginNames = this.pathRef.get(fullPath);
 
-        if (pluginName) {
-            // 1. 调用 Bot 的注销逻辑
-            this.bot.unregisterPlugin(pluginName);
+        if (pluginNames && pluginNames.length > 0) {
+            for (const pluginName of pluginNames) {
+                // 1. 调用 Bot 的注销逻辑
+                this.bot.unregisterPlugin(pluginName);
 
-            // 2. 清理内部映射记录
-            this.pluginPaths.delete(pluginName);
+                // 2. 清理内部映射记录
+                this.pluginPaths.delete(pluginName);
+
+                this.logger.info(`Unloaded: ${pluginName}`);
+            }
+            // 清理文件映射
             this.pathRef.delete(fullPath);
-
-            this.logger.info(`Unloaded: ${pluginName}`);
         } else {
             this.logger.info(`No active plugin linked to: ${fullPath}`);
         }

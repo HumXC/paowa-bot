@@ -1,10 +1,4 @@
-import {
-    NapLink,
-    MessageEvent,
-    PrivateMessageEvent,
-    GroupMessageEvent,
-    Logger as NapLogger,
-} from "@naplink/naplink";
+import { NapLink, MessageEvent, GroupMessageEvent } from "@naplink/naplink";
 import {
     TextSegment,
     AtSegment,
@@ -18,8 +12,14 @@ import {
     XmlSegment,
     MarkdownSegment,
 } from "@naplink/naplink";
-import { Command, Plugin, MessageHandler, parseCommandBasename } from "./types";
-import { PermissionManager } from "./permission";
+import {
+    Command,
+    Plugin,
+    MessageHandler,
+    parseCommandBasename,
+    BotMiddleware,
+    MiddlewareMeta,
+} from "./types";
 import { breadc, type Breadc, ParseError } from "breadc";
 import { z } from "zod";
 import { Logger, withScope } from "./logger";
@@ -28,7 +28,10 @@ export class Bot {
     public client: NapLink;
     public plugins: Map<string, Plugin> = new Map();
     public commands: Map<string, Command<any>> = new Map();
-    public permission: PermissionManager;
+    public pluginsDir: string;
+    public configDir: string;
+    private services: Map<string, any> = new Map();
+    private middlewares: BotMiddleware[] = [];
     private messageHandlers: Map<string, MessageHandler[]> = new Map();
     private cli: Breadc;
     private logger: Logger;
@@ -41,8 +44,9 @@ export class Bot {
         return this.__nickname;
     }
 
-    constructor() {
-        this.permission = new PermissionManager();
+    constructor(pluginsDir: string, configDir: string) {
+        this.pluginsDir = pluginsDir;
+        this.configDir = configDir;
         const logger = withScope("NapLink");
         this.logger = withScope("Bot");
         this.client = new NapLink({
@@ -129,66 +133,85 @@ export class Bot {
                 const { cmd, rawArgs } = match as { cmd: any; rawArgs: any[] };
 
                 // 作用域检查
-                if (cmd.scope === "private" && ctx.is_group) return;
-                if (cmd.scope === "group" && !ctx.is_group) return;
-
-                // 权限检查
-                const cmdName = parseCommandBasename(cmd.name);
-                const hasPerm = this.permission.checkPermission(
-                    ctx,
-                    cmd.pluginName,
-                    cmdName,
-                    cmd.permission
-                );
-                if (!hasPerm) {
-                    if (!ctx.is_group || ctx.is_at_self) {
-                        ctx.reply.text("没有权限").commit();
-                    }
+                if (cmd.scope === "private" && ctx.is_group) {
+                    ctx.reply.text("该命令仅限私聊使用").commit();
+                    return;
+                }
+                if (cmd.scope === "group" && !ctx.is_group) {
+                    ctx.reply.text("该命令仅限群聊使用").commit();
                     return;
                 }
 
-                // 参数校验与转换逻辑
-                let validatedArgs: any;
-                try {
-                    if (Array.isArray(cmd.args)) {
-                        // 如果定义的是元组/数组，逐个校验
-                        validatedArgs = cmd.args.map((schema: any, i: number) =>
-                            schema.parse(rawArgs[i])
-                        );
-                    } else if (cmd.args) {
-                        // 如果定义的是单参数，直接校验第一个
-                        validatedArgs = cmd.args.parse(rawArgs[0]);
-                    }
-                } catch (e) {
-                    if (e instanceof z.ZodError) {
-                        ctx.reply.text("Invalid arguments:");
-                        for (const err of e.issues) {
-                            ctx.reply.text(`\n- ${err.message}`);
+                const executeCommand = async () => {
+                    // 参数校验与转换逻辑
+                    let validatedArgs: any;
+                    try {
+                        if (Array.isArray(cmd.args)) {
+                            // 如果定义的是元组/数组，逐个校验
+                            validatedArgs = cmd.args.map((schema: any, i: number) =>
+                                schema.parse(rawArgs[i])
+                            );
+                        } else if (cmd.args) {
+                            // 如果定义的是单参数，直接校验第一个
+                            validatedArgs = cmd.args.parse(rawArgs[0]);
                         }
-                        await ctx.reply.commit();
-                        return;
+                    } catch (e) {
+                        if (e instanceof z.ZodError) {
+                            ctx.reply.text("Invalid arguments:");
+                            for (const err of e.issues) {
+                                ctx.reply.text(`\n- ${err.message}`);
+                            }
+                            await ctx.reply.commit();
+                            return;
+                        }
+                        throw e;
                     }
-                    throw e;
-                }
 
-                // 执行 Handler
-                this.logger.info(
-                    `Executing command: ${cmd.name} ${
-                        validatedArgs ? "args: " + JSON.stringify(validatedArgs) : ""
-                    }`
+                    // 执行 Handler
+                    this.logger.info(
+                        `Executing command: ${cmd.name} ${
+                            validatedArgs ? "args: " + JSON.stringify(validatedArgs) : ""
+                        }`
+                    );
+                    await cmd.handler(ctx, validatedArgs);
+
+                    if (ctx.reply_message.length > 0) {
+                        await ctx.reply.commit();
+                    }
+                };
+
+                const runMiddleware = async (
+                    index: number,
+                    meta: MiddlewareMeta,
+                    next: () => Promise<void>
+                ) => {
+                    if (index < this.middlewares.length) {
+                        await this.middlewares[index](ctx, meta, () =>
+                            runMiddleware(index + 1, meta, next)
+                        );
+                    } else {
+                        await next();
+                    }
+                };
+
+                await runMiddleware(
+                    0,
+                    {
+                        type: "command",
+                        pluginName: cmd.pluginName,
+                        commandName: cmd.name,
+                        permission: cmd.permission,
+                        args: rawArgs,
+                    },
+                    executeCommand
                 );
-                await cmd.handler(ctx, validatedArgs);
-
-                if (ctx.reply_message.length > 0) {
-                    await ctx.reply.commit();
-                }
                 return; // 命令已处理，直接返回
             }
         } catch (e) {
             if (e instanceof ParseError) {
                 const name = parseCommandBasename(argv.join(" "));
-                for (const [c, cmd] of this.commands) {
-                    if (c === name) {
+                for (const [fullName, cmd] of this.commands) {
+                    if (fullName.startsWith(name)) {
                         await ctx.reply.text(`Invalid command:\n${cmd.name}`).commit();
                         return;
                     }
@@ -208,18 +231,44 @@ export class Bot {
             this.logger.error(e);
         }
 
-        // 2. 遍历 MessageHandlers (逻辑保持不变)
+        // 2. 遍历 MessageHandlers
+        const runMiddleware = async (
+            index: number,
+            meta: MiddlewareMeta,
+            next: () => Promise<void>
+        ) => {
+            if (index < this.middlewares.length) {
+                await this.middlewares[index](ctx, meta, () =>
+                    runMiddleware(index + 1, meta, next)
+                );
+            } else {
+                await next();
+            }
+        };
+
         for (const [pluginName, handlers] of this.messageHandlers) {
             for (const handlerObj of handlers) {
                 if (handlerObj.scope === "private" && ctx.is_group) continue;
                 if (handlerObj.scope === "group" && !ctx.is_group) continue;
 
                 try {
-                    const intercepted = await handlerObj.handler(ctx);
-                    if (intercepted === true) {
-                        if (ctx.reply_message.length > 0) await ctx.reply.commit();
-                        return;
-                    }
+                    await runMiddleware(
+                        0,
+                        {
+                            type: "message",
+                            pluginName: pluginName,
+                            permission: handlerObj.permission,
+                        },
+                        async () => {
+                            const intercepted = await handlerObj.handler(ctx);
+                            if (intercepted === true) {
+                                if (ctx.reply_message.length > 0) await ctx.reply.commit();
+                                ctx.isHandled = true;
+                            }
+                        }
+                    );
+
+                    if (ctx.isHandled) return;
                 } catch (e) {
                     this.logger.error(`Handler error in ${pluginName}:`, e);
                 }
@@ -241,15 +290,14 @@ export class Bot {
             if (plugin.commands) {
                 this.logger.info(`Registering commands from plugin: ${plugin.meta.name}`);
                 plugin.commands.forEach((cmd) => {
-                    const c = parseCommandBasename(cmd.name);
-                    if (this.commands.has(c)) {
+                    if (this.commands.has(cmd.name)) {
                         this.logger.warn(`Command ${cmd.name} already exists, skipping...`);
                         return;
                     }
 
                     this.logger.info(`- ${cmd.name}`);
                     this.logger.info(`  ${cmd.description}`);
-                    this.commands.set(c, cmd);
+                    this.commands.set(cmd.name, cmd);
 
                     // 将命令元数据包装
                     const fullCmd = { ...cmd, pluginName: plugin.meta.name };
@@ -265,6 +313,19 @@ export class Bot {
                 });
             }
         }
+    }
+
+    public registerService(name: string, service: any) {
+        this.services.set(name, service);
+        this.logger.info(`Service registered: ${name}`);
+    }
+
+    public getService<T>(name: string): T | undefined {
+        return this.services.get(name);
+    }
+
+    public useMiddleware(middleware: BotMiddleware) {
+        this.middlewares.push(middleware);
     }
 
     public registerPlugin(plugin: Plugin, isReload: boolean = false) {
@@ -297,7 +358,6 @@ export class Bot {
             const loginInfo = await this.client.getLoginInfo();
             this.__id = loginInfo.user_id;
             this.__nickname = loginInfo.nickname;
-            this.permission.setSelfId(loginInfo.user_id);
             this.logger.info(`Bot started with self ID: ${loginInfo.user_id}`);
         } catch (error) {
             this.logger.error("Failed to connect:", error);
@@ -326,6 +386,7 @@ export class Context {
     public is_at_self: boolean = false; // 消息是否 @ 了机器人
     public message: MessageSegment[] = [];
     public reply_message: MessageSegment[] = [];
+    public isHandled: boolean = false;
     private _isSending: boolean = false;
     private _recallTimeout: number = -1;
     private _recallSenderTimeout: number = -1;
